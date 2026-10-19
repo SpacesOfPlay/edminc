@@ -1,0 +1,225 @@
+#!/bin/sh
+# edminc installer for macOS / Linux.
+#   curl -fsSL https://minc.dev/edminc/install | sh
+#
+# Installs edminc into ~/.edminc and adds it to your shell's PATH. The
+# editor's command is `edmc`. Also run by edmc_update to update in
+# place, and by `minc build install` to place a local build the same
+# way (via EDMINC_DIR).
+#
+# Options (environment variables):
+#   EDMINC_INSTALL   install dir           (default: ~/.edminc)
+#   EDMINC_VERSION   pin a release tag, e.g. v0.1.0   (default: latest)
+#   EDMINC_REPO      GitHub release repo   (default: SpacesOfPlay/edminc)
+#   EDMINC_ZIP       install from a local zip instead of downloading
+#   EDMINC_DIR       install from a local directory, already laid out
+#   EDMINC_FORCE     1 = reinstall even if already up to date
+#   EDMINC_NO_PATH   1 = don't touch the shell rc
+
+set -u
+
+repo="${EDMINC_REPO:-SpacesOfPlay/edminc}"
+install_dir="${EDMINC_INSTALL:-$HOME/.edminc}"
+local_zip="${EDMINC_ZIP:-}"
+local_dir="${EDMINC_DIR:-}"
+
+say()  { printf '%s\n' "$1"; }
+warn() { printf 'WARNING: %s\n' "$1" >&2; }
+fail() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
+
+# Options also arrive as flags, which is how `minc build install` hands
+# over a staged local build. Piped from curl there are none.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --from)
+            shift
+            [ "$#" -gt 0 ] || fail "--from needs a directory"
+            local_dir="$1" ;;
+        --no-path)
+            EDMINC_NO_PATH=1
+            export EDMINC_NO_PATH ;;
+        *) fail "unknown option: $1" ;;
+    esac
+    shift
+done
+
+os="$(uname -s)"
+machine="$(uname -m)"
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# Add the install dir to PATH via a guarded block in the shell rc. Called on
+# every install path - including "already up to date", where a previous run
+# may have placed the files but never reached this step.
+setup_path() {
+    if [ "${EDMINC_NO_PATH:-}" = "1" ]; then
+        say "Skipping PATH setup (EDMINC_NO_PATH=1). Binary: $install_dir/edmc"
+        return
+    fi
+    case "${SHELL:-}" in
+        */zsh)  rc="$HOME/.zprofile"
+                line="export PATH=\"$install_dir:\$PATH\"" ;;
+        */fish) rc="$HOME/.config/fish/config.fish"
+                line="set -gx PATH \"$install_dir\" \$PATH" ;;
+        *)      if [ "$os" = "Darwin" ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi
+                line="export PATH=\"$install_dir:\$PATH\"" ;;
+    esac
+    if [ -f "$rc" ] && grep -Fq '# >>> edminc >>>' "$rc"; then
+        say "PATH already configured in $rc"
+        return
+    fi
+    mkdir -p "$(dirname "$rc")"
+    {
+        printf '\n# >>> edminc >>>\n'
+        printf '%s\n' "$line"
+        printf '# <<< edminc <<<\n'
+    } >> "$rc"
+    say "Added to PATH in $rc"
+}
+
+# --- Platform -> asset ---
+
+case "$os" in
+    Darwin)
+        [ "$machine" = "arm64" ] || fail "unsupported platform: macOS $machine (edminc ships for Apple Silicon only)."
+        platform="macos-arm64" ;;
+    Linux)
+        case "$machine" in
+            x86_64) platform="linux-x64" ;;
+            *) fail "unsupported platform: Linux $machine (edminc ships for x86_64 only)." ;;
+        esac ;;
+    *) fail "unsupported platform: $os." ;;
+esac
+asset="edminc-$platform.zip"
+
+# --- Resolve version ---
+
+tag=""
+if [ -n "$local_dir" ]; then
+    [ -d "$local_dir" ] || fail "EDMINC_DIR not found: $local_dir"
+    say "Installing edminc from $local_dir to $install_dir"
+elif [ -n "$local_zip" ]; then
+    [ -f "$local_zip" ] || fail "EDMINC_ZIP not found: $local_zip"
+    say "Installing edminc from $local_zip to $install_dir"
+else
+    command -v curl  >/dev/null 2>&1 || fail "curl is required."
+    command -v unzip >/dev/null 2>&1 || fail "unzip is required (install it via your package manager)."
+    if [ -n "${EDMINC_VERSION:-}" ]; then
+        tag="$EDMINC_VERSION"
+    else
+        # releases/latest redirects to .../releases/tag/<tag>.
+        final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest") ||
+            fail "could not reach github.com to resolve the latest release."
+        tag="${final##*/tag/}"
+        case "$tag" in
+            */*|"") fail "no published release found at github.com/$repo" ;;
+        esac
+    fi
+    say "Installing edminc $tag to $install_dir"
+fi
+
+# --- Already up to date? ---
+#
+# --version is answered before the editor opens anything, so this is
+# safe on a machine with no display.
+
+if [ -n "$tag" ] && [ "${EDMINC_FORCE:-}" != "1" ] && [ -x "$install_dir/edmc" ]; then
+    cur=$("$install_dir/edmc" --version 2>/dev/null |
+        sed -n 's/^edminc \([0-9][0-9.]*\).*/\1/p' | head -n 1)
+    if [ -n "$cur" ] && [ "v$cur" = "$tag" ]; then
+        say "edminc $tag is already installed and up to date."
+        setup_path
+        exit 0
+    fi
+fi
+
+# --- Download + verify ---
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/edminc-install.XXXXXX") || fail "mktemp failed."
+trap 'rm -rf "$tmp"' EXIT
+
+payload=""
+if [ -n "$local_dir" ]; then
+    payload="$local_dir"
+else
+    zip_path="$local_zip"
+    if [ -z "$zip_path" ]; then
+        base="https://github.com/$repo/releases/download/$tag"
+        zip_path="$tmp/$asset"
+        say "Downloading $asset..."
+        curl -fSL --progress-bar "$base/$asset" -o "$zip_path" ||
+            fail "download failed: $base/$asset"
+        if curl -fsSL "$base/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt" 2>/dev/null; then
+            expected=$(grep " $asset\$" "$tmp/SHASUMS256.txt" | head -n 1 | cut -d' ' -f1)
+            [ -n "$expected" ] || fail "$asset not listed in SHASUMS256.txt"
+            actual=$(sha256 "$zip_path")
+            [ "$actual" = "$expected" ] ||
+                fail "checksum mismatch for $asset (expected $expected, got $actual)"
+            say "Checksum OK."
+        else
+            warn "SHASUMS256.txt not available for this release - skipping checksum verification."
+        fi
+    fi
+
+    mkdir "$tmp/x"
+    unzip -q "$zip_path" -d "$tmp/x" || fail "unzip failed."
+
+    # Payload sits at the extract root or inside one wrapping folder.
+    if [ -f "$tmp/x/edmc" ]; then
+        payload="$tmp/x"
+    else
+        for d in "$tmp/x"/*/; do
+            if [ -f "${d}edmc" ]; then payload="${d%/}"; break; fi
+        done
+    fi
+    [ -n "$payload" ] || fail "edmc binary not found inside the archive."
+fi
+
+[ -f "$payload/edmc" ] || fail "edmc binary not found in $payload"
+
+# --- Install ---
+
+mkdir -p "$install_dir"
+rm -rf "$install_dir/assets"
+# Unlink before copying rather than write over: on macOS a binary written
+# over one a running editor holds is killed at every later launch (the
+# kernel keeps the held file's signature), and the editor holding it
+# dies with it. An unlinked file stays with the process that holds it.
+for f in "$payload"/*; do
+    [ -f "$f" ] && rm -f "$install_dir/${f##*/}"
+done
+cp -R "$payload"/. "$install_dir"/
+
+for f in edmc edmc_update; do
+    [ -f "$install_dir/$f" ] && chmod +x "$install_dir/$f"
+done
+if [ "$os" = "Darwin" ]; then
+    # Gatekeeper refuses a quarantined binary that was never opened from
+    # Finder, and the editor is launched from a shell.
+    xattr -dr com.apple.quarantine "$install_dir" 2>/dev/null
+fi
+
+[ -x "$install_dir/edmc" ] || fail "installed edmc is not executable."
+# no pipe here: it would hide a binary the kernel refuses to run
+ver_out=$("$install_dir/edmc" --version 2>&1) ||
+    fail "installed edmc failed to run: $ver_out"
+ver_out=$(printf '%s\n' "$ver_out" | head -n 1)
+
+# --- PATH ---
+
+setup_path
+
+# --- Done ---
+
+say ""
+say "$ver_out installed to $install_dir"
+say ""
+say "Open a NEW terminal (or: export PATH=\"$install_dir:\$PATH\"), then:"
+say "  edmc            # open the editor"
+say "  edmc <folder>   # open a project"
+say ""
+say "Update any time:  edmc_update"

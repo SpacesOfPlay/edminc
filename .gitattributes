@@ -1,0 +1,5 @@
+# Text files use LF line endings in the repository and in every
+# checkout, on every platform. The fuzzer renders the repository's own
+# files, so a seed gives the same frame hash on two machines only when
+# the files have the same bytes on both.
+* text=auto eol=lf

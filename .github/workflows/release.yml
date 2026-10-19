@@ -1,0 +1,124 @@
+name: release
+
+# Build native binaries and attach them to a GitHub release. Push a tag
+# like v0.1.0 (or run this by hand and pass a tag) to cut one. The
+# release is created as a draft so the assets can be checked before it
+# goes public.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux-x64,   exe: edmc }
+          - { os: windows-latest, name: windows-x64, exe: edmc.exe }
+          - { os: macos-latest,   name: macos-arm64, exe: edmc }
+    runs-on: ${{ matrix.os }}
+    env:
+      VER: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with the version the binary reports would
+      # ship a build that lies about itself, and the installer compares
+      # the two to decide whether an installed copy is current.
+      - name: version matches the tag
+        shell: bash
+        run: |
+          src=$(sed -n 's/.*EDMINC_VERSION = "\([0-9][0-9.]*\)".*/\1/p' src/edminc.mc | head -n 1)
+          [ -n "$src" ] || { echo "no EDMINC_VERSION in src/edminc.mc"; exit 1; }
+          [ "v$src" = "$VER" ] || { echo "src/edminc.mc has $src, the tag is $VER"; exit 1; }
+          echo "version $src matches tag $VER"
+
+      - name: install minc (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL https://minc.dev/install | MINC_NO_PATH=1 bash
+          echo "$HOME/.minc" >> "$GITHUB_PATH"
+
+      - name: install minc (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MINC_NO_PATH = '1'
+          iwr https://minc.dev/install.ps1 -UseBasicParsing | iex
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.minc"
+
+      - name: build
+        run: minc build
+
+      # Ship assets/ (fonts, icons) next to the binary; the editor finds
+      # them beside its own executable, so it runs from anywhere. Include
+      # the licenses the bundled fonts require. The color emoji font is
+      # not bundled (see THIRD_PARTY.md).
+      #
+      # The archive name carries no version: the installer asks GitHub
+      # for the latest tag and then downloads a name it already knows.
+      # Zip on every platform, since the installer unzips on all three.
+      - name: package
+        shell: bash
+        run: |
+          dir="edminc-${{ matrix.name }}"
+          mkdir "$dir"
+          cp "build/${{ matrix.exe }}" "$dir/"
+          cp -r assets "$dir/"
+          for f in LICENSE THIRD_PARTY.md; do
+            [ -f "$f" ] && cp "$f" "$dir/"
+          done
+          [ -f dist/README.md ] && cp dist/README.md "$dir/README.md"
+          # the in-place updater, so an installed copy can refresh itself
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp install/edmc_update.ps1 "$dir/"
+            7z a "$dir.zip" "$dir" >/dev/null
+          else
+            cp install/edmc_update "$dir/"
+            chmod +x "$dir/edmc_update" "$dir/${{ matrix.exe }}"
+            zip -qr "$dir.zip" "$dir"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: edminc-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      VER: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # The installer verifies the archive against this before unpacking,
+      # so it ships with every release. Globbing only the archives keeps
+      # the file from hashing itself.
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum *.zip > SHASUMS256.txt
+          cat SHASUMS256.txt
+
+      - name: create draft release
+        run: |
+          gh release create "$VER" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "$VER" \
+            --generate-notes \
+            --draft

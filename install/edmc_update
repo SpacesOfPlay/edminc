@@ -1,0 +1,25 @@
+#!/bin/sh
+# Update edminc in place, by re-running the installer.
+#   edmc_update [tag]
+#
+# Installed next to edmc, so it is on PATH with it. Updates the copy it
+# sits in, which is what makes a non-default EDMINC_INSTALL keep working.
+
+set -u
+
+url="${EDMINC_INSTALL_URL:-https://minc.dev/edminc/install}"
+
+if [ "$#" -gt 0 ] && [ -n "$1" ]; then
+    EDMINC_VERSION="$1"
+    export EDMINC_VERSION
+fi
+
+if [ -z "${EDMINC_INSTALL:-}" ]; then
+    EDMINC_INSTALL=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    export EDMINC_INSTALL
+fi
+
+command -v curl >/dev/null 2>&1 || { printf 'ERROR: curl is required.\n' >&2; exit 1; }
+
+printf 'Updating edminc in %s\n' "$EDMINC_INSTALL"
+curl -fsSL "$url" | sh

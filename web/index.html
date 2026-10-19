@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>edminc</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1e1e; overflow: hidden; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  #msg { position: fixed; left: 12px; top: 12px; color: #ccc; font: 13px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="msg">loading…</div>
+<script type="module">
+  import { start } from './edminc_host.js';
+  const msg = document.getElementById('msg');
+  const app = new URLSearchParams(location.search).get('app') || 'edminc';
+  start({ wasmPath: app + '.wasm', canvas: document.getElementById('canvas') })
+    .then(() => { msg.remove(); })
+    .catch(e => { msg.textContent = 'edminc: ' + (e.message || e); console.error(e); });
+</script>
+</body>
+</html>

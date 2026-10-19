@@ -1,0 +1,12 @@
+build/
+CLAUDE.local.md
+__pycache__/
+
+# per-folder editor session state
+.edminc/
+
+# color emoji font: large, staged into the web page from assets/ by the
+# wasm build but never committed. Drop a copy here (or install Noto Color
+# Emoji system-wide on Linux) to get color emoji off Windows.
+assets/NotoColorEmoji.ttf
+assets/*ColorEmoji*.ttf

@@ -1,0 +1,67 @@
+name: pages
+
+# Build the browser editor and publish it to GitHub Pages
+# (https://spacesofplay.github.io/edminc/). One-time setup: in the
+# repository settings, set Pages -> Build and deployment -> Source to
+# "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deploy at a time; let an in-flight one finish rather than cancel it
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install minc
+        run: |
+          curl -fsSL https://minc.dev/install | MINC_NO_PATH=1 bash
+          echo "$HOME/.minc" >> "$GITHUB_PATH"
+
+      # the color emoji font is large and not committed; build.mc fetches
+      # it once and caches it under build/. Keep that across runs.
+      - name: cache color emoji font
+        uses: actions/cache@v4
+        with:
+          path: build/NotoColorEmoji.ttf
+          key: noto-color-emoji-v1
+
+      - name: build the browser bundle
+        run: |
+          export MINC_LSP_WASM="$HOME/.minc/minc-lsp.wasm"
+          minc wasm --no-serve
+
+      # the editor's language server ships with the page; fail loudly if
+      # the install did not carry it rather than deploy without one
+      - name: check the bundle
+        run: |
+          test -f build/web/edminc.wasm
+          test -f build/web/index.html
+          test -f build/web/minc_lsp_web.wasm
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
