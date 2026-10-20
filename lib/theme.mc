@@ -649,7 +649,7 @@ private void theme_store() {
     C_MDLIST = theme_pal[75];
 }
 
-const u32 T_BRAND = 0xFFEEB46C;          // #6CB4EE the project mark's blue
+const u32 T_BRAND = 0xFF1A5AFF;          // #FF5A1A the project mark's orange
 
 // the embedded .mc icon's pseudo-codepoint (see lib/icon_mc.mc and
 // the glyph cache); outside Unicode so text never produces it
@@ -660,7 +660,7 @@ const u32 ICON_EDMC = 0xF0001;
 
 // File-type icon + color, mirroring the reference icon theme's
 // mapping (seti glyphs at U+E0xx from assets/seti.ttf); .mc gets
-// the project mark in its brand blue.
+// the project mark in its brand orange.
 u32 theme_file_icon(str name, u32* col) {
     if str_ends_with(name, ".mc") {
         *col = T_BRAND;
